@@ -1,0 +1,476 @@
+name: beezymarket
+services:
+  rclone:
+    container_name: rclone
+    hostname: rclone
+    volumes:
+      - /volume1/docker/appdata/rclone:/config/rclone
+      - /volume1/data/nzbdav:/data:rshared
+      - /volume1/data/nzbdav/cache:/var/services
+      - /etc/passwd:/etc/passwd:ro
+      - /etc/group:/etc/group:ro
+      - /volume1/docker/rclone-cache:/speedcache
+    devices:
+      - /dev/fuse
+    cap_add:
+      - SYS_ADMIN
+    security_opt:
+      - apparmor:unconfined
+    user: 1027:100
+    environment:
+      - PUID=1027
+      - PGID=100
+      - TZ=Europe/Berlin
+      - UMASK=002
+    network_mode: bridge
+    working_dir: /data
+    logging:
+      driver: db
+    restart: always
+    runtime: runc
+    tty: true
+    image: rclone/rclone:latest
+    healthcheck:
+      test: ["CMD", "sh", "-c", "ls /data/nzbdav-mnt > /dev/null 2>&1"]
+      interval: 15s
+      timeout: 15s
+      retries: 20
+      start_period: 60s
+    command: >
+      mount nzb-dav: /data/nzbdav-mnt
+      --vfs-cache-mode full
+      --vfs-cache-max-size 20G
+      --vfs-cache-max-age 24h
+      --vfs-read-ahead 512M
+      --vfs-read-chunk-size 64M
+      --vfs-read-chunk-size-limit 2G
+      --buffer-size 0M
+      --dir-cache-time 20s
+      --cache-dir=/speedcache
+      --use-cookies
+      --allow-other
+      --allow-non-empty
+      --links
+      --uid=1027
+      --gid=100
+      --log-level=DEBUG
+      --log-file=/config/rclone/rclone.log
+    depends_on:
+      nzbdav:
+        condition: service_started
+  nzbdav:
+    container_name: nzbdav
+    hostname: nzbdav
+    volumes:
+      - /volume1/docker/appdata/nzbdav:/config
+      - /volume1/data/nzbdav/nzbdav-mnt:/mnt/nzbdav:slave
+    environment:
+      - PUID=1027
+      - PGID=100
+      - UMASK=002
+      - TZ=Europe/Berlin
+    networks:
+      - wired
+    working_dir: /app
+    ports:
+      - 3000:3000
+    restart: always
+    logging:
+      driver: db
+    runtime: runc
+    tty: true
+    image: nzbdav/nzbdav:latest
+    command: /entrypoint.sh
+  tautulli:
+    container_name: tautulli
+    hostname: tautulli
+    mac_address: 02:42:ac:11:00:09
+    volumes:
+      - /volume1/docker/appdata/tautulli/config:/config
+    environment:
+      - PUID=1027
+      - PGID=100
+      - TZ=Europe/Berlin
+    networks:
+      - wired
+    working_dir: /
+    ports:
+      - 8181:8181
+    logging:
+      driver: db
+    runtime: runc
+    tty: true
+    image: linuxserver/tautulli:latest
+  dashdot:
+    image: mauricenino/dashdot:latest
+    container_name: dashdot
+    restart: unless-stopped
+    ports:
+      - "3001:3001"
+    volumes:
+      - /:/mnt/host:ro
+    privileged: true
+  sonarr:
+    container_name: sonarr
+    hostname: sonarr
+    volumes:
+      - /volume1/docker/appdata/sonarr:/config
+      - /volume1/data/media/tv:/data/media/tv
+      - /volume1/data/media/tv-nzbdav:/data/media/tv-nzbdav
+      - /volume1/data/usenet/complete/tv:/data/usenet/complete/tv
+      - /volume1/data/nzbdav/nzbdav-mnt:/mnt/nzbdav:slave
+    environment:
+      - TZ=Europe/Berlin
+      - PUID=1027
+      - PGID=100
+    networks:
+      - wired
+    working_dir: /
+    ports:
+      - 8990:8989
+    restart: always
+    logging:
+      driver: db
+    runtime: runc
+    tty: true
+    image: linuxserver/sonarr:latest
+  sonarr-db:
+    image: postgres:16 # most recent version is 18, but I chose one before
+    container_name: sonarr-db
+    ports:
+      - "7001:5432" # while Pg is not exposed outside the docker network, map to host to be able to execute pg_dump from the outside
+    restart: always
+    shm_size: 256mb
+    volumes:
+      - /volume1/docker/appdata/sonarr-db-secrets:/run/secrets # contains postgres-passwd file, just to not have password in compose file
+      - /volume1/docker/appdata/sonarr-db:/var/lib/postgresql/data # mandatory mapping for Pg
+    environment:
+      POSTGRES_USER: sonarr
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres-passwd # the postgres image automatically reads the password from the file defined in this environment variable
+      POSTGRES_DB: sonarr-main # name of the initial database to create, which is the default name of the Sonarr database
+    networks:
+      - wired # use the same user-defined bridge network as Sonarr (mandatory for communicating between containers using container names as hostnames)
+    depends_on:
+      rclone:
+        condition: service_healthy
+      prowlarr:
+        condition: service_started
+  anime-sonarr:
+    container_name: anime-sonarr
+    hostname: anime-sonarr
+    mac_address: 02:42:ac:11:00:0a
+    volumes:
+      - /volume1/docker/appdata/anime-sonarr:/config
+      - /volume1/data/media/tv-anime:/data/media/tv-anime
+      - /volume1/data/media/tv-anime-nzbdav:/data/media/tv-anime-nzbdav
+      - /volume1/data/usenet/complete/tv-anime:/data/usenet/complete/tv-anime
+      - /volume1/data/nzbdav/nzbdav-mnt:/mnt/nzbdav:slave
+    environment:
+      - TZ=Europe/Berlin
+      - PUID=1027
+      - PGID=100
+    networks:
+      - wired
+    working_dir: /
+    ports:
+      - 8995:8989
+    restart: always
+    logging:
+      driver: db
+    runtime: runc
+    tty: true
+    image: linuxserver/sonarr:latest
+    labels:
+      - org.opencontainers.image.ref.name=eafda89e6cc05cb4ae02faef1c3346ce2fcb9c33
+      - org.opencontainers.image.created=2024-03-01T23:31:53+00:00
+      - org.opencontainers.image.version=4.0.2.1183-ls230
+      - org.opencontainers.image.revision=eafda89e6cc05cb4ae02faef1c3346ce2fcb9c33
+      - build_version=Linuxserver.io version:- 4.0.2.1183-ls230
+        Build-date:- 2024-03-01T23:31:53+00:00
+    depends_on:
+      rclone:
+        condition: service_healthy
+      prowlarr:
+        condition: service_started
+  anime-sonarr-db:
+    image: postgres:17 # most recent version is 18, but I chose one before
+    container_name: anime-sonarr-db
+    ports:
+      - "7003:5432" # while Pg is not exposed outside the docker network, map to host to be able to execute pg_dump from the outside
+    restart: always
+    shm_size: 128mb
+    volumes:
+      - /volume1/docker/appdata/anime-sonarr-db-secrets:/run/secrets # contains postgres-passwd file, just to not have password in compose file
+      - /volume1/docker/appdata/anime-sonarr-db:/var/lib/postgresql/data # mandatory mapping for Pg
+    environment:
+      POSTGRES_USER: sonarr
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres-passwd # the postgres image automatically reads the password from the file defined in this environment variable
+      POSTGRES_DB: sonarr-main # name of the initial database to create, which is the default name of the Sonarr database
+    networks:
+      - wired # use the same user-defined bridge network as Sonarr (mandatory for communicating between containers using container names as hostnames)
+  overseerr:
+    container_name: overseer
+    hostname: overseer
+    mac_address: 02:42:ac:11:00:04
+    volumes:
+      - /volume1/docker/appdata/Overseer:/config
+    environment:
+      - TZ=Europe/Germany
+      - PUID=1026
+      - PGID=100
+    network_mode: bridge
+    working_dir: /
+    ports:
+      - 8078:5055
+    restart: always
+    logging:
+      driver: db
+    runtime: runc
+    deploy:
+      resources:
+        limits:
+          memory: "2147483648"
+    tty: true
+    image: linuxserver/overseerr:latest
+  sabnzbd:
+    container_name: sabnzbd
+    hostname: sabnzbd
+    mac_address: 02:42:ac:11:00:02
+    volumes:
+      - /volume1/docker/appdata/sabnzbd:/config
+      - /volume1/data/usenet/complete:/data/usenet/complete
+      - /volume1/data/usenet/incomplete:/data/usenet/incomplete
+    environment:
+      - PUID=1027
+      - PGID=100
+      - TZ=Europe/Berlin
+    networks:
+      - wired
+    working_dir: /
+    ports:
+      - 8080:8080
+    restart: always
+    logging:
+      driver: db
+    runtime: runc
+    tty: true
+    image: linuxserver/sabnzbd:latest
+  prowlarr:
+    container_name: prowlarr
+    hostname: prowlarr
+    volumes:
+      - /volume1/docker/appdata/prowlarr:/config
+    environment:
+      - PUID=1027
+      - PGID=100
+      - TZ=Europe/Berlin
+    networks:
+      - wired
+    ports:
+      - 9696:9696
+    logging:
+      driver: db
+    runtime: runc
+    tty: true
+    image: linuxserver/prowlarr:latest
+  homarr:
+    container_name: homarr
+    image: ghcr.io/homarr-labs/homarr:latest
+    restart: unless-stopped
+    volumes:
+      - /volume1/docker/appdata/homarr:/appdata
+    environment:
+      - SECRET_ENCRYPTION_KEY=fdb7d31c8235a1e1d905995377747c12c283d884d6120d4f22c111fe14085512
+    ports:
+      - 4755:7575
+    networks:
+      - wired
+  radarr:
+    container_name: radarr
+    hostname: beezymarket
+    volumes:
+      - /volume1/docker/appdata/radarr:/config
+      - /volume1/data/media/movies:/data/media/movies
+      - /volume1/data/media/movies-nzbdav:/data/media/movies-nzbdav
+      - /volume1/data/usenet/complete/movies:/data/usenet/complete/movies
+      - /volume1/data/nzbdav/nzbdav-mnt:/mnt/nzbdav:slave
+    environment:
+      - PUID=1027
+      - PGID=100
+      - TZ=Europe/Berlin
+    networks:
+      - wired
+    working_dir: /
+    ports:
+      - 8310:8310
+    restart: always
+    logging:
+      driver: db
+    runtime: runc
+    image: lscr.io/linuxserver/radarr:latest
+    depends_on:
+      rclone:
+        condition: service_healthy
+      prowlarr:
+        condition: service_started
+  radarr-db:
+    image: postgres:17 # most recent version is 18, but I chose one before
+    container_name: radarr-db
+    ports:
+      - "7002:5432" # while Pg is not exposed outside the docker network, map to host to be able to execute pg_dump from the outside
+    restart: always
+    shm_size: 128mb
+    volumes:
+      - /volume1/docker/appdata/radarr-db-secrets:/run/secrets # contains postgres-passwd file, just to not have password in compose file
+      - /volume1/docker/appdata/radarr-db:/var/lib/postgresql/data # mandatory mapping for Pg
+    environment:
+      POSTGRES_USER: radarr
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres-passwd # the postgres image automatically reads the password from the file defined in this environment variable
+      POSTGRES_DB: radarr-main # name of the initial database to create, which is the default name of the Radarr database
+    networks:
+      - wired # use the same user-defined bridge network as Radarr (mandatory for communicating between containers using container names as hostnames)
+    depends_on:
+      rclone:
+        condition: service_healthy
+      prowlarr:
+        condition: service_started
+  plex:
+    container_name: plex
+    image: lscr.io/linuxserver/plex:latest
+    network_mode: host
+    volumes:
+      - /volume1/docker/appdata/plex:/config
+      # Movies
+      - /volume1/data/media/movies:/data/media/movies
+      - /volume1/data/media/movies-nzbdav:/data/media/movies-nzbdav
+      # TV Shows
+      - /volume1/data/media/tv:/data/media/tv
+      - /volume1/data/media/tv-nzbdav:/data/media/tv-nzbdav
+      # Anime
+      - /volume1/data/media/tv-anime:/data/media/tv-anime
+      - /volume1/data/media/tv-anime-nzbdav:/data/media/tv-anime-nzbdav
+      # Music
+      - /volume1/data/media/music:/data/media/music
+      # Nzbdav
+      - /volume1/data/nzbdav/nzbdav-mnt:/mnt/nzbdav:slave
+    environment:
+      - PUID=297536 #Was set by plex before and worked
+      - PGID=297536 #Was set by plex before and worked
+      - TZ=Europe/Berlin
+      - VERSION=latest
+    restart: unless-stopped
+    logging:
+      driver: db
+    runtime: runc
+    tty: true
+    depends_on:
+      rclone:
+        condition: service_healthy
+      nzbdav:
+        condition: service_started
+
+  bookshelf: ## Readarr
+    image: ghcr.io/pennydreadful/bookshelf:hardcover-v0.4.20.107
+    container_name: bookshelf
+    volumes:
+      - /volume1/docker/appdata/bookshelf:/config
+      - /volume1/data/media/books:/data/media/books
+      - /volume1/data/usenet/complete/books:/data/usenet/complete/books
+    environment:
+      - PUID=1027
+      - PGID=100
+      - TZ=Europe/Berlin
+    ports:
+      - 8787:8787
+    restart: unless-stopped
+  lidarr:
+    image: lscr.io/linuxserver/lidarr:latest
+    container_name: lidarr
+    environment:
+      - PUID=1027
+      - PGID=100
+      - TZ=Europe/Berlin
+    volumes:
+      - /volume1/docker/appdata/lidarr:/config
+      - /volume1/data/media/music:/data/media/music
+      - /volume1/data/usenet/complete/music:/data/usenet/complete/music
+    networks:
+      - wired
+    ports:
+      - 8686:8686
+    restart: unless-stopped
+  syncthing:
+    image: lscr.io/linuxserver/syncthing:latest
+    container_name: syncthing
+    environment:
+      - PUID=1027
+      - PGID=100
+      - TZ=Europe/Berlin
+    volumes:
+      - /volume1/docker/appdata/syncthing:/config
+      - /volume1/backups/syncthing/obsidian:/obsidian
+    ports:
+      - 8384:8384
+    restart: unless-stopped
+  immich-server:
+    container_name: immich_server
+    image: ghcr.io/immich-app/immich-server:${IMMICH_VERSION:-release}
+    # extends:
+    #   file: hwaccel.transcoding.yml
+    #   service: cpu # set to one of [nvenc, quicksync, rkmpp, vaapi, vaapi-wsl] for accelerated transcoding
+    volumes:
+      # Do not edit the next line. If you want to change the media storage location on your system, edit the value of UPLOAD_LOCATION in the .env file
+      - ${UPLOAD_LOCATION}:/data
+      - /etc/localtime:/etc/localtime:ro
+    env_file:
+      - .env
+    ports:
+      - "2283:2283"
+    depends_on:
+      - redis
+      - database
+    restart: always
+    healthcheck:
+      disable: false
+  immich-machine-learning:
+    container_name: immich_machine_learning
+    # For hardware acceleration, add one of -[armnn, cuda, rocm, openvino, rknn] to the image tag.
+    # Example tag: ${IMMICH_VERSION:-release}-cuda
+    image: ghcr.io/immich-app/immich-machine-learning:${IMMICH_VERSION:-release}
+    # extends: # uncomment this section for hardware acceleration - see https://docs.immich.app/features/ml-hardware-acceleration
+    #   file: hwaccel.ml.yml
+    #   service: cpu # set to one of [armnn, cuda, rocm, openvino, openvino-wsl, rknn] for accelerated inference - use the `-wsl` version for WSL2 where applicable
+    volumes:
+      - model-cache:/cache
+    env_file:
+      - .env
+    restart: always
+    healthcheck:
+      disable: false
+  redis:
+    container_name: immich_redis
+    image: docker.io/valkey/valkey:8@sha256:81db6d39e1bba3b3ff32bd3a1b19a6d69690f94a3954ec131277b9a26b95b3aa
+    healthcheck:
+      test: redis-cli ping || exit 1
+    restart: always
+  database:
+    container_name: immich_postgres
+    image: ghcr.io/immich-app/postgres:14-vectorchord0.4.3-pgvectors0.2.0@sha256:bcf63357191b76a916ae5eb93464d65c07511da41e3bf7a8416db519b40b1c23
+    environment:
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_USER: ${DB_USERNAME}
+      POSTGRES_DB: ${DB_DATABASE_NAME}
+      POSTGRES_INITDB_ARGS: "--data-checksums"
+      # Uncomment the DB_STORAGE_TYPE: 'HDD' var if your database isn't stored on SSDs
+      DB_STORAGE_TYPE: "HDD"
+    volumes:
+      # Do not edit the next line. If you want to change the database storage location on your system, edit the value of DB_DATA_LOCATION in the .env file
+      - ${DB_DATA_LOCATION}:/var/lib/postgresql/data
+    shm_size: 128mb
+    restart: always
+volumes:
+  model-cache:
+
+networks:
+  wired:
+    driver: bridge
